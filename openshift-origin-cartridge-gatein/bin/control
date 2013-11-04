@@ -2,20 +2,20 @@
 
 source $OPENSHIFT_CARTRIDGE_SDK_BASH
 
-JBOSSAS_BIN_DIR=${OPENSHIFT_JBOSSAS_DIR}/bin
-JBOSSAS_PID_FILE=${OPENSHIFT_HOMEDIR}/app-root/runtime/jbossas.pid
-JBOSSAS_DEPLOYMENTS_DIR=${OPENSHIFT_JBOSSAS_DIR}/standalone/deployments
+JBOSSAS_BIN_DIR=${OPENSHIFT_GATEIN_DIR}/bin
+JBOSSAS_PID_FILE=${OPENSHIFT_HOMEDIR}/app-root/runtime/gatein.pid
+JBOSSAS_DEPLOYMENTS_DIR=${OPENSHIFT_GATEIN_DIR}/standalone/deployments
 SCANCONFIG=""
 
 source $JBOSSAS_BIN_DIR/util
 
-cartridge_type="jbossas"
+cartridge_type="gatein"
 
 # Return the deployment-scanner configuration
 function getscanconfig() {
     count=0
     while [ ${count} -lt 4 ]; do
-      controller="${OPENSHIFT_JBOSSAS_IP}:${OPENSHIFT_JBOSSAS_MANAGEMENT_NATIVE_PORT}"
+      controller="${OPENSHIFT_GATEIN_IP}:${OPENSHIFT_GATEIN_MANAGEMENT_NATIVE_PORT}"
       scanconfig=`jboss-cli.sh -c --controller=${controller} "/subsystem=deployment-scanner/:read-resource(recursive=true)" 2>&1 || :`
       if [[ $scanconfig =~ '"outcome" => "success"' ]] ; then
         SCANCONFIG=$scanconfig
@@ -30,76 +30,75 @@ function getscanconfig() {
 # Verify that the deployment scanner has finished running
 function waitondeployments() {
     if ! ismgmtup; then
-      client_message "Timed out waiting for management listening port"
+        client_message "Timed out waiting for management listening port"
+    fi
+
+    getscanconfig
+
+    if [ "$SCANCONFIG" == "" ]; then
       client_message "Could not connect to JBoss management interface, skipping deployment verification"
-    else 
-      getscanconfig
+    elif [[ $SCANCONFIG =~ '"scan-enabled" => true' ]]; then
+      pushd $GATEIN_DEPLOYMENTS_DIR
 
-      if [ "$SCANCONFIG" == "" ]; then
-        client_message "Could not connect to JBoss management interface, skipping deployment verification"
-      elif [[ $SCANCONFIG =~ '"scan-enabled" => true' ]]; then
-        pushd $JBOSSAS_DEPLOYMENTS_DIR
+      artifacts=()
+      while read -r -d $'\0'; do
+        artifacts+=("$REPLY")
+      done < <(find . -iregex '.*\.\([ejrsw]ar\|zip\)$' -print0)
 
-        artifacts=()
-        while read -r -d $'\0'; do
-          artifacts+=("$REPLY")
-        done < <(find . -iregex '.*\.\([ejrsw]ar\|zip\)$' -print0)
-
-        deployexploded=false
-        if [[ $SCANCONFIG =~ '"auto-deploy-exploded" => true' ]]; then
-          deployexploded=true
-        fi
-        deployarchive=false
-        if [[ $SCANCONFIG =~ '"auto-deploy-zipped" => true' ]]; then
-          deployarchive=true
-        fi 
-
-        artifactsdeployed=()
-        artifactsfailed=()
-        artifactsskipped=()
-        artifactsunknown=()
-        for artifact in ${artifacts[*]}; do
-          if ( [ -f $artifact ] && $deployarchive ) || ( [ -d $artifact ] && $deployexploded ); then         
-            # TODO triple check this logic, add a timeout 
-            while [ -f ${artifact}.isdeploying ]; do
-              client_message "Artifact: ${artifact} is still deploying"
-              sleep 10
-            done
-
-            if [ -f ${artifact}.deployed ]; then
-              artifactsdeployed+=($artifact)
-            elif [ -f ${artifact}.failed ]; then
-              artifactsfailed+=($artifact)
-            else
-              artifactsunknown+=($artifact)
-            fi
-
-          else
-            # artifact skipped because of deployment scanner config
-            artifactsskipped+=($artifact)
-          fi
-        done
-
-        popd
-
-        if [ ${#artifactsskipped[@]} -gt 0 ]; then
-          echo "Artifacts skipped because of deployment-scanner configuration: ${artifactsskipped[*]}"
-        fi
-
-        if [ ${#artifactsfailed[@]} -gt 0 ]; then
-          echo "Failed deployments: ${artifactsfailed[*]}"
-        fi
-
-        if [ ${#artifactsdeployed[@]} -gt 0 ]; then
-          echo "Artifacts deployed: ${artifactsdeployed[*]}"
-        fi
-
-        if [ ${#artifactsunknown[@]} -gt 0 ]; then
-          echo "Artifacts in an unknown state: ${artifactsunknown[*]}"
-        fi
-      else
-          echo "Deployment scanner disabled, skipping deployment verification"
+      deployexploded=false
+      if [[ $SCANCONFIG =~ '"auto-deploy-exploded" => true' ]]; then
+        deployexploded=true
       fi
+      deployarchive=false
+      if [[ $SCANCONFIG =~ '"auto-deploy-zipped" => true' ]]; then
+        deployarchive=true
+      fi 
+
+      artifactsdeployed=()
+      artifactsfailed=()
+      artifactsskipped=()
+      artifactsunknown=()
+      for artifact in ${artifacts[*]}; do
+        if ( [ -f $artifact ] && $deployarchive ) || ( [ -d $artifact ] && $deployexploded ); then         
+          # TODO triple check this logic, add a timeout 
+          while [ -f ${artifact}.isdeploying ]; do
+            client_message "Artifact: ${artifact} is still deploying"
+            sleep 10
+          done
+
+          if [ -f ${artifact}.deployed ]; then
+            artifactsdeployed+=($artifact)
+          elif [ -f ${artifact}.failed ]; then
+            artifactsfailed+=($artifact)
+          else
+            artifactsunknown+=($artifact)
+          fi
+
+        else
+          # artifact skipped because of deployment scanner config
+          artifactsskipped+=($artifact)
+        fi
+      done
+
+      popd
+
+      if [ ${#artifactsskipped[@]} -gt 0 ]; then
+        client_message "Artifacts skipped because of deployment-scanner configuration: ${artifactsskipped[*]}"
+      fi
+
+      if [ ${#artifactsfailed[@]} -gt 0 ]; then
+        client_message "Failed deployments: ${artifactsfailed[*]}"
+      fi
+
+      if [ ${#artifactsdeployed[@]} -gt 0 ]; then
+        client_message "Artifacts deployed: ${artifactsdeployed[*]}"
+      fi
+
+      if [ ${#artifactsunknown[@]} -gt 0 ]; then
+        client_message "Artifacts in an unknown state: ${artifactsunknown[*]}"
+      fi
+    else
+        client_message "Deployment scanner disabled, skipping deployment verification"
     fi
 }
 
@@ -156,8 +155,8 @@ function ishttpup() {
     let count=0
     while [ ${count} -lt 64 ]
     do
-        if /usr/sbin/lsof -P -n -i "@${OPENSHIFT_JBOSSAS_IP}:${OPENSHIFT_JBOSSAS_HTTP_PORT}" | grep "(LISTEN)" > /dev/null; then
-            echo "Found ${OPENSHIFT_JBOSSAS_IP}:${OPENSHIFT_JBOSSAS_HTTP_PORT} listening port"
+        if /usr/sbin/lsof -P -n -i "@${OPENSHIFT_GATEIN_IP}:${OPENSHIFT_GATEIN_HTTP_PORT}" | grep "(LISTEN)" > /dev/null; then
+            echo "Found ${OPENSHIFT_GATEIN_IP}:${OPENSHIFT_GATEIN_HTTP_PORT} listening port"
             return 0
         fi
         let count=${count}+1
@@ -173,8 +172,8 @@ function ismgmtup() {
     let count=0
     while [ ${count} -lt 10 ]
     do
-        if /usr/sbin/lsof -P -n -i "@${OPENSHIFT_JBOSSAS_IP}:${OPENSHIFT_JBOSSAS_MANAGEMENT_NATIVE_PORT}" | grep "(LISTEN)" > /dev/null; then
-            echo "Found ${OPENSHIFT_JBOSSAS_IP}:${OPENSHIFT_JBOSSAS_MANAGEMENT_NATIVE_PORT} listening port"
+        if /usr/sbin/lsof -P -n -i "@${OPENSHIFT_GATEIN_IP}:${OPENSHIFT_GATEIN_MANAGEMENT_NATIVE_PORT}" | grep "(LISTEN)" > /dev/null; then
+            echo "Found ${OPENSHIFT_GATEIN_IP}:${OPENSHIFT_GATEIN_MANAGEMENT_NATIVE_PORT} listening port"
             return 0
         fi
         let count=${count}+1
@@ -186,19 +185,20 @@ function ismgmtup() {
 }
 
 function build() {
-  CONFIG_DIR="${OPENSHIFT_JBOSSAS_DIR}/standalone/configuration"
+  CONFIG_DIR="${OPENSHIFT_GATEIN_DIR}/standalone/configuration"
   OPENSHIFT_MAVEN_MIRROR="${CONFIG_DIR}/settings.base.xml"
   if [[ $OPENSHIFT_GEAR_DNS =~ .*\.rhcloud\.com$ ]]
   then
       OPENSHIFT_MAVEN_MIRROR="${CONFIG_DIR}/settings.rhcloud.xml"
   fi
 
-  max_memory_mb=${OPENSHIFT_GEAR_MEMORY_MB}
+  max_memory_bytes=$(oo-cgroup-read memory.limit_in_bytes)
+  max_memory_mb=$(expr $max_memory_bytes / 1048576)
 
   # If hot deploy is enabled, we need to restrict the Maven memory size to fit
   # alongside the running application server. For now, just hard-code it to 64
   # and figure out how to apply a scaling factor later.
-  if hot_deploy_enabled_for_latest_deployment
+  if marker_present hot_deploy
     then
       echo "Scaling down Maven heap settings due to presence of hot_deploy marker"
 
@@ -219,9 +219,9 @@ function build() {
 
   if [ -z "$BUILD_NUMBER" ]
   then
-      if force_clean_build_enabled_for_latest_deployment
+      if marker_present force_clean_build
       then
-          echo "Force-clean build is enabled. Removing Maven dependencies." 1>&2
+          echo ".openshift/markers/force_clean_build found!  Removing Maven dependencies." 1>&2
           rm -rf ${OPENSHIFT_HOMEDIR}.m2/* ${OPENSHIFT_HOMEDIR}.m2/.[^.]*
       fi
 
@@ -260,16 +260,15 @@ function build() {
 function deploy() {
   echo "Deploying JBoss"
 
-  # if repo/deployments has any files in it, sync them to $JBOSSAS_DEPLOYMENTS_DIR
-  # and delete any files in $JBOSSAS_DEPLOYMENTS_DIR that don't exist in
-  # repo/deployments
-  if [ "$(ls ${OPENSHIFT_REPO_DIR}/deployments 2>/dev/null)" ]; then
+  if [ "$(ls ${OPENSHIFT_REPO_DIR}/deployments)" ]; then
     rsync -r --delete --exclude ".*" ${OPENSHIFT_REPO_DIR}/deployments/ $JBOSSAS_DEPLOYMENTS_DIR
+  else
+    rm -rf ${JBOSSAS_DEPLOYMENTS_DIR}/*
   fi
 }
 
 function start() {
-  echo "Starting $cartridge_type cartridge"
+  echo "Starting $cartridge_type cart"
 
   if marker_present "enable_jpda"
   then
@@ -295,7 +294,7 @@ function start() {
 
 
 function stop() {
-  echo "Stopping $cartridge_type cartridge"
+  echo "Stopping $cartridge_type cart"
 
   if isrunning; then
     if [ -f "$JBOSSAS_PID_FILE" ]; then
@@ -309,7 +308,10 @@ function stop() {
 }
 
 function restart() {
+    echo "Restarting $cartridge_type cart"
+
     stop
+
     start
 }
 
@@ -323,18 +325,19 @@ function status() {
 }
 
 function reload() {
+    echo "Reloading $cartridge_type cart"
     restart
 }
 
 # Clean up any log files
 function tidy() {
-  client_message "Emptying log dir: $OPENSHIFT_JBOSSAS_LOG_DIR"
+  client_message "Emptying log dir: $OPENSHIFT_GATEIN_LOG_DIR"
   shopt -s dotglob
   rm -rf $OPENSHIFT_JBOSSAS_LOG_DIR/*
 }
 
 function threaddump() {
-  echo "Thread dump for $cartridge_type cartridge"
+  echo "Thread dump for $cartridge_type cart"
 
     if ! isrunning; then
         echo "Application is stopped"
@@ -350,8 +353,6 @@ function threaddump() {
         echo "Failed to locate JBOSS PID File"
     fi
 }
-
-export OPENSHIFT_SECRET_TOKEN=${OPENSHIFT_SECRET_TOKEN:-OPENSHIFT_APP_UUID}
 
 case "$1" in
   build)           build ;;
